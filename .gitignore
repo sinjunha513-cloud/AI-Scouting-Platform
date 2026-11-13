@@ -1,16 +1,7 @@
+# Private source data: permission to redistribute has not been established.
+*.xlsx
+*.xls
+*.csv
 __pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-.ipynb_checkpoints/
-.vscode/
-.idea/
-*.log
-.DS_Store
-Thumbs.db
-# Do not commit private or licensed player datasets
-raw_data.csv
-data/raw/
-data/*.csv
-data/*.xlsx
+.ruff_cache/
+.streamlit/secrets.toml

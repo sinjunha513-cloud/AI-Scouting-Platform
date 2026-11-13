@@ -43,6 +43,7 @@ AI-Scouting-Platform/
 ├── analysis_utils.py      # Standardization, history and recommendation helpers
 ├── sample_data.py         # Fictional demonstration dataset generator
 ├── requirements.txt       # Python package dependencies
+├── test_analysis.py        # Model and Streamlit regression tests
 ├── .gitignore
 └── README.md
 ```
@@ -51,16 +52,26 @@ AI-Scouting-Platform/
 
 - Scores are **relative to the available season and position-group comparison set**, not absolute measures of ability.
 - User-configurable weights affect rankings and grades; the resulting scores are not constrained to 0–100.
-- Playing-style and detailed-position labels are **rule-based estimates**, not validated predictions.
+- Playing-style and detailed-position labels are **rule-based estimates**, not validated predictions. Their standardized inputs are independent of user scoring weights. Style percentages express relative rule scores, not calibrated probabilities.
 - Player recommendations use standardized statistical features, K-Means grouping and cosine similarity. Similarity is **not** a probability of recruitment success.
 - Historical comparisons are relative to each season's reference group. Matching solely by player name may combine namesakes.
 - Minimum playing-time filters and dataset coverage can change the comparison population and results.
+- Missing per-90 counts are derived from cumulative counts and positive playing time when possible. Cumulative counts are never used as a fallback in per-90 scoring; success percentages are not divided by minutes.
+- Missing observations remain missing in source metrics. Scoring uses a neutral Z-score of zero for missing inputs; strengths and weaknesses use observed values only. The interface shows the observed share of scoring weights.
+- Players without any observed, positively weighted scoring metric are excluded. If no evaluable data remains, the app displays guidance instead of assigning default scores.
+- Strengths and weaknesses are ordered by deviation in the favorable or unfavorable direction, including lower-is-better metrics such as fouls and ball losses.
 
 ## Data and reproducibility
 
 The included `sample_data.py` creates fictional player records with a fixed random seed. No licensed or private player dataset is included. Users are responsible for ensuring they have rights to any real datasets they upload or redistribute.
 
-Dependencies were derived from the imported packages and supported Excel readers. The application has been deployed to Streamlit Community Cloud. Exact package versions and all individual app workflows have not been independently verified.
+Install the dependencies in `requirements.txt`, then run the regression suite:
+
+```bash
+python -m unittest test_analysis.py
+```
+
+The suite covers per-90 derivation, missing observations, scoring-independent role labels, lower-is-better strengths and weaknesses, player recommendations, and Streamlit screens with missing metrics or all-zero weights. An additional local-workbook check runs when an XLSX file is available and is skipped otherwise. These checks validate implementation behavior, not real-world scouting accuracy.
 
 ## Author
 

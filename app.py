@@ -17,9 +17,9 @@ from analysis_utils import standardize_metrics, recommend_players, get_player_hi
 from sample_data import make_sample_data
 
 st.set_page_config(page_title="AI 스카우팅 플랫폼", layout="wide", page_icon="⚽")
-st.title("⚽ 머신러닝 기반 AI 스카우팅 플랫폼")
+st.title("⚽ AI 스카우팅 플랫폼")
 st.info("점수·등급은 사용자 가중치에 따른 시즌·포지션 그룹 내 상대평가입니다. 검증된 절대 능력이나 미래 성과 예측이 아니며 0~100으로 제한되지 않습니다.")
-st.caption("포지션·플레이스타일은 규칙 기반 추정입니다.")
+st.caption("포지션·플레이스타일은 규칙 기반 추정입니다. 스타일 비중(%)은 규칙 점수의 상대 비중이며 검증된 확률이 아닙니다.")
 
 # =========================================================
 # 1. 지표 매핑 데이터베이스
@@ -246,7 +246,34 @@ def load_data(file):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "출전시간" in df: df["출전시간"] = pd.to_numeric(df["출전시간"], errors="coerce")
-    return df.replace([np.inf, -np.inf], np.nan).fillna(0)
+    # 누락 기록을 실제 0회와 구분합니다. 보정은 비교집단 안에서 수행합니다.
+    return df.replace([np.inf, -np.inf], np.nan)
+
+
+def prepare_metric_data(data):
+    """Preserve missing observations and derive missing per-90 counts safely."""
+    data = data.copy()
+    for source, target in {"Assistant_Qty": "Assist_Qty",
+                           "Teckle_Won_Rate": "PCNT_TACKLE_WON"}.items():
+        if source in data:
+            data[target] = data[target].combine_first(data[source]) if target in data else data[source]
+    known = set(feature_korean) | set(per90_map.values())
+    for col in known.intersection(data.columns):
+        data[col] = pd.to_numeric(data[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    minutes = pd.to_numeric(data["출전시간"], errors="coerce").where(lambda x: x > 0)
+    per_columns = {}
+    for raw, per in per90_map.items():
+        if raw.startswith("PCNT_"):
+            continue  # 성공률은 시간으로 나누지 않습니다.
+        if raw in data:
+            derived = data[raw] * 90 / minutes
+            per_columns[per] = data[per].combine_first(derived) if per in data else derived
+        elif per in data:
+            per_columns[per] = data[per]
+        if per in per_columns:
+            per_columns[per] = per_columns[per].where(minutes.notna())
+    return pd.concat([data.drop(columns=list(per_columns), errors="ignore"),
+                      pd.DataFrame(per_columns, index=data.index)], axis=1)
 
 def classify_position_group(pos):
     """Map a player's listed position to a broad position group."""
@@ -258,30 +285,47 @@ def classify_position_group(pos):
 
 def _get_z(row, base_col, data_mode):
     """Return the Z-score column value for the selected data mode."""
-    if data_mode == "90분당 데이터" and base_col in per90_map:
+    if (data_mode == "90분당 데이터" and base_col in per90_map
+            and not base_col.startswith("PCNT_")):
         target_col = per90_map[base_col] + "_Z"
     else:
         target_col = base_col + "_Z"
-    return float(row.get(target_col, 0.0))
+    value = row.get(target_col, 0.0)
+    return float(value) if pd.notna(value) and np.isfinite(value) else 0.0
 
 def determine_detailed_position(row, data_mode):
     """Infer a detailed playing position from standardized metrics."""
     g = row["POSITION_GROUP"]
-    z = lambda c: _get_z(row, c, data_mode)
+    def z(c):
+        return _get_z(row, c, data_mode)
+    evidence = {
+        "ATTACK": {"SHOT_ON_TARGET_IN_PA", "Goal_Qty", "AIR_CHALG_WON", "DRIBBLE_SUCCESS", "ATT_AREA_PASS_SUCCESS", "PASS_F_ACC_CA_DEG"},
+        "MIDFIELDER": {"EX_ATT_KEY_PASS_ACC", "Assist_Qty", "SHOOTING_IN_PA", "INTERCEPT", "TACKLE_SUCCESS", "CUT_OFF", "DEFS_AREA_PASS_SUCCESS", "PCNT_ACC_PASS", "MIDDLE_AREA_PASS_SUCCESS", "TRANSVERSE_PASS_SUCCESS"},
+        "DEFENDER": {"BLOCKING_BALL", "KICK_OUT", "AIR_CHALLENGE_PCNT", "DRIBBLE", "ATT_AREA_PASS", "PASS_F_CA_DEG"},
+    }
+    if not any(metric_is_observed(row, c, data_mode) for c in evidence.get(g, set())):
+        return str(row.get("포지션", "정보 부족"))
+    def choose(candidates):
+        available = {name: score for name, (score, metrics) in candidates.items()
+                     if any(metric_is_observed(row, c, data_mode) for c in metrics)}
+        return max(available, key=available.get)
     if g == "ATTACK":
         st_score = (z("SHOT_ON_TARGET_IN_PA") * 2.0) + (z("Goal_Qty") * 1.5) + (z("AIR_CHALG_WON") * 1.0)
         lrw_score = (z("DRIBBLE_SUCCESS") * 2.0) + (z("ATT_AREA_PASS_SUCCESS") * 1.5) + (z("PASS_F_ACC_CA_DEG") * 1.0)
-        return "ST" if st_score >= lrw_score else "L/RW"
+        return choose({"ST": (st_score, {"SHOT_ON_TARGET_IN_PA", "Goal_Qty", "AIR_CHALG_WON"}),
+                       "L/RW": (lrw_score, {"DRIBBLE_SUCCESS", "ATT_AREA_PASS_SUCCESS", "PASS_F_ACC_CA_DEG"})})
     elif g == "MIDFIELDER":
         cam = (z("EX_ATT_KEY_PASS_ACC") * 2.0) + (z("Assist_Qty") * 1.5) + (z("SHOOTING_IN_PA") * 1.0)
         cdm = (z("INTERCEPT") * 1.8) + (z("TACKLE_SUCCESS") * 1.5) + (z("CUT_OFF") * 1.2) + (z("DEFS_AREA_PASS_SUCCESS") * 0.8)
         cm = (z("PCNT_ACC_PASS") * 1.5) + (z("MIDDLE_AREA_PASS_SUCCESS") * 1.5) + (z("TRANSVERSE_PASS_SUCCESS") * 1.0)
-        if cdm > cam and cdm > cm: return "CDM"
-        return "CAM" if cam >= cm else "CM"
+        return choose({"CDM": (cdm, {"INTERCEPT", "TACKLE_SUCCESS", "CUT_OFF", "DEFS_AREA_PASS_SUCCESS"}),
+                       "CAM": (cam, {"EX_ATT_KEY_PASS_ACC", "Assist_Qty", "SHOOTING_IN_PA"}),
+                       "CM": (cm, {"PCNT_ACC_PASS", "MIDDLE_AREA_PASS_SUCCESS", "TRANSVERSE_PASS_SUCCESS"})})
     elif g == "DEFENDER":
         cb = (z("BLOCKING_BALL") * 2.0) + (z("KICK_OUT") * 1.5) + (z("AIR_CHALLENGE_PCNT") * 1.2)
         lrb = (z("DRIBBLE") * 1.5) + (z("ATT_AREA_PASS") * 1.5) + (z("PASS_F_CA_DEG") * 1.2)
-        return "CB" if cb >= lrb else "L/RB"
+        return choose({"CB": (cb, {"BLOCKING_BALL", "KICK_OUT", "AIR_CHALLENGE_PCNT"}),
+                       "L/RB": (lrb, {"DRIBBLE", "ATT_AREA_PASS", "PASS_F_CA_DEG"})})
     return str(row.get("포지션", "ETC"))
 
 def assign_composite_roles(row, data_mode):
@@ -309,6 +353,27 @@ def assign_composite_roles(row, data_mode):
     else:
         return "분석 불가", "분석 불가"
 
+    role_inputs = {
+        "포쳐(스코어러)": {"Goal_Qty", "St_Valid_Qty"},
+        "타겟맨": {"AIR_CHALG_WON", "SHOT_ON_TARGET_IN_PA"},
+        "연계형 포워드": {"Assist_Qty", "EX_ATT_KEY_PASS", "PASS_F_ACC_CA_DEG"},
+        "인사이드 포워드": {"DRIBBLE_SUCCESS", "SHOOTING_IN_PA", "SHOT"},
+        "클래식 윙어": {"ATT_AREA_PASS", "DRIBBLE"},
+        "전진형 플레이메이커": {"EX_ATT_KEY_PASS_ACC", "ATT_AREA_PASS_SUCCESS", "Assist_Qty"},
+        "후방 플레이메이커": {"LONG_PASS_SUCCESS", "PASS_F_ACC_CA_DEG", "PCNT_ACC_PASS"},
+        "박스 투 박스": {"CHALG_WON", "BALL_RECOVERIE", "MIDDLE_AREA_PASS_SUCCESS"},
+        "홀딩 파이터": {"TACKLE_SUCCESS", "INTERCEPT", "CUT_OFF"},
+        "빌드업 센터백": {"PASS_F_ACC_CA_DEG", "DEFS_AREA_PASS_SUCCESS"},
+        "파이터형 스토퍼": {"TACKLE_SUCCESS", "CHALG_WON", "BLOCKING_BALL"},
+        "제공권 장악형": {"AIR_CHALG_WON", "KICK_OUT"},
+        "공격형 풀백": {"ATT_AREA_PASS", "DRIBBLE", "PASS_F_CA_DEG"},
+        "수비형 풀백": {"INTERCEPT", "CUT_OFF", "ATT_AREA_PASS"},
+    }
+    roles = {name: score for name, score in roles.items()
+             if any(metric_is_observed(row, c, data_mode) for c in role_inputs[name])}
+    if not roles:
+        return "정보 부족", "역할 판정에 필요한 관측 지표 없음"
+
     T = 1.5
     max_s = max(roles.values())
     exp_s = {k: math.exp((v - max_s) / T) for k, v in roles.items()}
@@ -316,12 +381,21 @@ def assign_composite_roles(row, data_mode):
     probs = {k: (v / total) * 100 for k, v in exp_s.items()}
     srt = sorted(probs.items(), key=lambda i: i[1], reverse=True)
     primary = srt[0][0]
-    comp = f"[{srt[0][0]} {srt[0][1]:.1f}%] + [{srt[1][0]} {srt[1][1]:.1f}%] + [{srt[2][0]} {srt[2][1]:.1f}%]"
+    comp = " + ".join(f"[{name} {value:.1f}%]" for name, value in srt[:3])
     return primary, comp
+
+
+def metric_is_observed(row, metric, data_mode):
+    if data_mode == "90분당 데이터" and metric in per90_map and not metric.startswith("PCNT_"):
+        metric = per90_map[metric]
+    value = row.get(metric, np.nan)
+    return pd.notna(value) and np.isfinite(value)
 
 def allowed_weakness(col, group):
     """Check whether a weakness metric is relevant to the position group."""
     base = col.replace("Per_", "")
+    if base in negative_features:
+        return True
     if group == "DEFENDER":
         return base in defensive_metrics or base in buildup_metrics
     if group == "ATTACK":
@@ -337,19 +411,21 @@ def analyze_strength_weakness(sub, weights, group):
             m = means[c]
             if m == 0 or pd.isna(m):
                 continue
+            if pd.isna(row[c]):
+                continue
             val = float(row[c])
             ratio = val / m if m != 0 else 0
             is_neg = c in negative_features or c.replace("Per_", "") in negative_features
             name = feature_korean.get(c, c)
             if is_neg:
-                if ratio <= 0.7: strong.append((name, ratio))
-                elif ratio >= 1.5: weak.append((name, ratio, c))
+                if ratio <= 0.7: strong.append((name, 1 - ratio))
+                elif ratio >= 1.5: weak.append((name, ratio - 1, c))
             else:
-                if ratio >= 1.5: strong.append((name, ratio))
-                elif ratio <= 0.7: weak.append((name, ratio, c))
+                if ratio >= 1.5: strong.append((name, ratio - 1))
+                elif ratio <= 0.7: weak.append((name, 1 - ratio, c))
         weak = [w for w in weak if allowed_weakness(w[2], group)]
         strong = sorted(strong, key=lambda x: -x[1])[:5]
-        weak = sorted(weak, key=lambda x: x[1])[:5]
+        weak = sorted(weak, key=lambda x: -x[1])[:5]
         s_str = ", ".join([n for n, _ in strong]) if strong else "특이 강점 없음"
         w_str = ", ".join([n for n, _, _ in weak]) if weak else "특이 약점 없음"
         return pd.Series([s_str, w_str])
@@ -374,12 +450,14 @@ def convert_weights_by_mode(weights, data_mode, data):
     """Map configured weights to cumulative or per-90 columns."""
     conv = {}
     for raw, w in weights.items():
+        if w <= 0:
+            continue
         if data_mode == "90분당 데이터":
-            per = per90_map.get(raw)
-            if per in data.columns: conv[per] = w
-            elif raw in data.columns: conv[raw] = w
+            is_rate = raw.startswith("PCNT_") or raw in {"AIR_CHALLENGE_PCNT", "Teckle_Won_Rate"}
+            per = raw if is_rate else per90_map.get(raw)
+            if per in data.columns and data[per].notna().any(): conv[per] = w
         else:
-            if raw in data.columns: conv[raw] = w
+            if raw in data.columns and data[raw].notna().any(): conv[raw] = w
     return conv
 
 def normalize_weights(weights):
@@ -390,11 +468,13 @@ def normalize_weights(weights):
 
 def add_zscores(data, weights):
     """Add standardized metric columns to a copy of the data."""
-    data = data.copy()
+    z_columns = {}
     for col in weights:
         mu, sd = data[col].mean(), data[col].std()
-        data[col + "_Z"] = 0 if (sd == 0 or pd.isna(sd)) else (data[col] - mu) / sd
-    return data
+        # 결측은 평균적인 상대 위치(0)로만 보정하며 원본 열은 유지합니다.
+        z_columns[col + "_Z"] = pd.Series(0.0, index=data.index) if (sd == 0 or pd.isna(sd)) else ((data[col] - mu) / sd).fillna(0.0)
+    return pd.concat([data.drop(columns=list(z_columns), errors="ignore"),
+                      pd.DataFrame(z_columns, index=data.index)], axis=1)
 
 def calculate_score(data, weights):
     """Calculate scouting scores and grades from weighted Z-scores."""
@@ -414,6 +494,7 @@ def calculate_score(data, weights):
 def apply_model(data, data_mode, w_att, w_mid, w_def):
     """Run the scouting model independently by season and position group."""
     if len(data) == 0: return pd.DataFrame()
+    data = prepare_metric_data(data)
 
     distinct_years = data["연도"].unique()
     yearly_results = []
@@ -427,9 +508,20 @@ def apply_model(data, data_mode, w_att, w_mid, w_def):
             sub = yr_data[yr_data["POSITION_GROUP"] == group].copy()
             if len(sub) == 0: continue
             weights = normalize_weights(convert_weights_by_mode(base, data_mode, sub))
-            sub = add_zscores(sub, weights)
+            if not weights:
+                continue
+            # 지표가 전혀 없는 행에 기본 50점을 부여하지 않습니다.
+            observed = sub[list(weights)].notna().any(axis=1)
+            # 역할 판정의 입력은 평가 가중치와 독립적으로 준비합니다.
+            known = set(feature_korean) | set(per90_map.values())
+            role_weights = convert_weights_by_mode({c: 1.0 for c in known if not c.startswith("Per_")}, data_mode, sub)
+            sub = add_zscores(sub, set(role_weights) | set(weights))
+            sub["평가지표관측비중(%)"] = sub[list(weights)].notna().mul(pd.Series(weights)).sum(axis=1) * 100
             sub["포지션"] = sub.apply(lambda r: determine_detailed_position(r, data_mode), axis=1)
             sub[["수식어", "복합_스타일"]] = sub.apply(lambda r: pd.Series(assign_composite_roles(r, data_mode)), axis=1)
+            sub = sub.loc[observed].copy()
+            if sub.empty:
+                continue
             sub = calculate_score(sub, weights)
             sub = analyze_strength_weakness(sub, weights, group)
             sub["USED_FEATURES"] = ", ".join(weights.keys())
@@ -555,7 +647,9 @@ working_df = df[df["출전시간"] >= min_minutes].copy()
 model_df = apply_model(working_df, data_mode, attack_weights_custom, midfielder_weights_custom, defender_weights_custom)
 final_df = model_df.copy()
 if len(final_df) == 0:
-    st.warning("분석 가능한 데이터가 없습니다."); st.stop()
+    st.warning("평가 가능한 지표가 없습니다. 출전시간, 지표 열, 데이터 모드와 0보다 큰 가중치를 확인하세요."); st.stop()
+
+st.caption("누락된 90분당 기록은 누적 기록과 유효한 출전시간으로 환산합니다. 성공률은 환산하지 않습니다. 누락 지표는 점수에서 비교집단 평균 위치로 보정하며 강점·약점에는 사용하지 않습니다. 평가 지표가 전혀 없는 선수는 제외됩니다.")
 
 # 화면 출력 전용 최종 필터링 작동
 if "연도" in final_df.columns and selected_year != "전체":
@@ -620,6 +714,7 @@ c2.metric("팀명", player["팀명"])
 c3.metric("판단 포지션", player["포지션"])
 c4.metric("출전시간", f"{int(player['출전시간'])}분")
 c5.metric("상대평가 점수", f"{player['SCOUTING_SCORE']} 점")
+st.caption(f"선택 선수의 평가 가중치 중 실제 관측된 지표 비중: {player['평가지표관측비중(%)']:.1f}%")
 with c6:
     st.markdown("<label style='font-size:14px;color:gray;'>선수 등급</label>", unsafe_allow_html=True)
     st.markdown(grade_html, unsafe_allow_html=True)
@@ -637,14 +732,14 @@ sc1, sc2 = st.columns(2)
 with sc1:
     st.markdown(f"""
         <div style="background-color:#064E3B;padding:12px 18px;border-radius:8px;">
-            <span style="color:#6EE7B7;font-size:14px;font-weight:bold;">💪 강점 ({player['연도']}시즌 평균 150% 이상)</span><br>
+            <span style="color:#6EE7B7;font-size:14px;font-weight:bold;">💪 강점 (동일 시즌·대분류 평균 대비 가점 지표 150% 이상 / 감점 지표 70% 이하)</span><br>
             <span style="color:#FFFFFF;font-size:16px;">{player['강점']}</span>
         </div>
     """, unsafe_allow_html=True)
 with sc2:
     st.markdown(f"""
         <div style="background-color:#7F1D1D;padding:12px 18px;border-radius:8px;">
-            <span style="color:#FCA5A5;font-size:14px;font-weight:bold;">⚠️ 약점 ({player['연도']}시즌 평균 70% 이하)</span><br>
+            <span style="color:#FCA5A5;font-size:14px;font-weight:bold;">⚠️ 약점 (동일 시즌·대분류 평균 대비 가점 지표 70% 이하 / 감점 지표 150% 이상)</span><br>
             <span style="color:#FFFFFF;font-size:16px;">{player['약점']}</span>
         </div>
     """, unsafe_allow_html=True)
@@ -872,6 +967,9 @@ with left_comp:
     comp_used_weights = normalize_weights(convert_weights_by_mode(comp_base_weights, data_mode, final_df))
     comp_sorted_uw = sorted(comp_used_weights.items(), key=lambda i: i[1], reverse=True)
     comp_radar_features = [f for f, _ in comp_sorted_uw][:10]
+    if not comp_radar_features:
+        st.info("선택한 비교 포지션에 평가 가능한 지표가 없습니다.")
+        selected_comparison_players = []
 
     # 수비수 예외처리 매핑 동기화
     comp_target_miss = "Per_BALL_MISS" if data_mode == "90분당 데이터" else "BALL_MISS"
