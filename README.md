@@ -2,6 +2,12 @@
 
 An interactive **Streamlit-based football scouting application** for exploring player statistics, comparing players, and generating data-driven scouting summaries.
 
+## Live demo
+
+**[Launch the AI Scouting Platform](https://junha-ai-scouting.streamlit.app/)**
+
+Try the app with the built-in fictional sample dataset—no real player data is required.
+
 ## Features
 
 - Upload player statistics in **CSV, XLSX, or XLS** format
@@ -54,7 +60,7 @@ AI-Scouting-Platform/
 
 The included `sample_data.py` creates fictional player records with a fixed random seed. No licensed or private player dataset is included. Users are responsible for ensuring they have rights to any real datasets they upload or redistribute.
 
-Dependencies were derived from the imported packages and supported Excel readers. Exact package versions and end-to-end deployment behavior have not yet been verified.
+Dependencies were derived from the imported packages and supported Excel readers. The application has been deployed to Streamlit Community Cloud. Exact package versions and all individual app workflows have not been independently verified.
 
 ## Author
 
