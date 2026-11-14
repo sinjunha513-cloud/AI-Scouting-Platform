@@ -10,7 +10,7 @@ Try the app with the built-in fictional sample dataset—no real player data is 
 
 ## Contribution and project scope
 
-**Three-person team, 3 months.** Junha Shin was responsible for platform development and the implementation of scoring, clustering, and similar-player recommendation logic. This repository presents those implementation contributions; it does not attribute all team work to one person.
+**Three-person team, 3 months.** Junha Shin's assigned role was platform development and machine-learning logic, including scoring, clustering, and similar-player recommendations. GPT was used extensively for code generation, revision, and debugging in this work. Independent Python implementation skills are still developing. The features below describe the resulting application; they do not imply that every component was implemented without assistance.
 
 **Problem:** raw player totals and direct comparisons across seasons or positions can be misleading because playing time and comparison populations differ.
 
