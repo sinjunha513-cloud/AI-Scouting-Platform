@@ -8,6 +8,16 @@ An interactive **Streamlit-based football scouting application** for exploring p
 
 Try the app with the built-in fictional sample dataset—no real player data is required.
 
+## Contribution and project scope
+
+**Three-person team, 3 months.** Junha Shin was responsible for platform development and the implementation of scoring, clustering, and similar-player recommendation logic. This repository presents those implementation contributions; it does not attribute all team work to one person.
+
+**Problem:** raw player totals and direct comparisons across seasons or positions can be misleading because playing time and comparison populations differ.
+
+**Approach:** use season- and position-specific standardized metrics, derive per-90 counts when valid, and expose configurable weights and data coverage so users can interpret the scores.
+
+**Outcome:** an interactive scouting tool with a live demo and fictional sample data. Real-world recommendation quality and future player performance have not been validated.
+
 ## Features
 
 - Upload player statistics in **CSV, XLSX, or XLS** format
@@ -60,6 +70,19 @@ AI-Scouting-Platform/
 - Missing observations remain missing in source metrics. Scoring uses a neutral Z-score of zero for missing inputs; strengths and weaknesses use observed values only. The interface shows the observed share of scoring weights.
 - Players without any observed, positively weighted scoring metric are excluded. If no evaluable data remains, the app displays guidance instead of assigning default scores.
 - Strengths and weaknesses are ordered by deviation in the favorable or unfavorable direction, including lower-is-better metrics such as fouls and ball losses.
+
+## Design decisions and evaluation scope
+
+| Decision | Reason | Remaining limitation |
+| --- | --- | --- |
+| Season- and position-group standardization | Compare players with an explicitly defined reference population | Rankings change with population coverage and filtering |
+| Per-90 counts derived only from positive playing time | Make count metrics more comparable across playing time | Small-minute samples remain unstable; rate statistics stay on their original scale |
+| Missing-data handling and coverage display | Avoid treating unavailable observations as evidence of poor performance | Neutral scoring and imputation can affect ranks and similarity |
+| K-Means grouping with cosine similarity | Organize statistical profiles and retrieve similar players | Statistical similarity is not recruitment suitability or predicted success |
+
+Scoring and similarity use different missing-data paths: scoring uses neutral Z-scores for missing inputs; the similarity preprocessing helper median-imputes numeric features, fills all-missing values with zero, and drops constant features before standardization. These choices should be considered when interpreting results.
+
+The existing regression suite checks implementation behavior. It does not establish scouting accuracy. Future evaluation could compare recommendation methods against a clearly defined relevance task, examine stability across samples and weights, and analyze failure cases. Such experiments are not claimed as completed here.
 
 ## Data and reproducibility
 
